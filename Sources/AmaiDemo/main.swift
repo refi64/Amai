@@ -11,6 +11,8 @@ struct Home: StatelessWidget, Hashable {
     func build(ctx: BuildContext) -> Widget {
         return Window(
             title: "Amai Demo",
+            width: 640,
+            height: 480,
             child: Button(text: "Hello, world!")
         )
     }

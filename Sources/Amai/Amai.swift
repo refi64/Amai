@@ -1,4 +1,4 @@
-import Cui
+import CGtk
 
 
 public class Key: Hashable {
@@ -31,12 +31,67 @@ public class AutoKey<Wrapped: Hashable>: Key {
 }
 
 
+func getPointer<Ty: AnyObject>(fromObject object: Ty) -> UnsafeMutableRawPointer {
+    return Unmanaged.passUnretained(object).toOpaque()
+}
+
+
+func getObject<Target: AnyObject>(fromPointer ptr: UnsafeMutableRawPointer,
+                                  to: Target.Type) ->
+        Target {
+    return Unmanaged.fromOpaque(ptr).takeUnretainedValue()
+}
+
+
+func gcast<Source, Target>(_ ptr: UnsafeMutablePointer<Source>,
+                           to target: Target.Type) -> UnsafeMutablePointer<Target> {
+    return UnsafeMutableRawPointer(ptr).bindMemory(to: target, capacity: 1)
+}
+
+
+func gCallbackFrom<Func>(closure: Func) -> GCallback {
+    return unsafeBitCast(closure, to: GCallback.self)
+}
+
+
 public class BuildContext {
     var activeStates: [Key: State] = [:]
     var reActiveStates: [Key: State] = [:]
     var rootNode: RenderNode? = nil
+    var app: Application
+    var gtkApp: UnsafeMutablePointer<GtkApplication>
+
+    var cself: UnsafeMutableRawPointer {
+        return getPointer(fromObject: self)
+    }
+
+    static func from(_ cself: UnsafeMutableRawPointer) -> BuildContext {
+        return getObject(fromPointer: cself, to: BuildContext.self)
+    }
 
     let maxIterations = 500
+
+    init(app: Application) {
+        self.app = app
+        gtkApp = gtk_application_new(app.id, GApplicationFlags(rawValue: 0))
+
+        let closure: @convention(c)
+            (UnsafeMutablePointer<GtkApplication>,
+             UnsafeMutableRawPointer) -> Void = {(app, cself) in
+                BuildContext.from(cself).buildIteration()
+            }
+        g_signal_connect_data(gcast(gtkApp, to: GObject.self), "activate",
+                              gCallbackFrom(closure: closure), cself, nil,
+                              GConnectFlags(rawValue: 0))
+    }
+
+    func runApp() {
+        g_application_run(gcast(gtkApp, to: GApplication.self), 0, nil)
+    }
+
+    deinit {
+        g_object_unref(gtkApp)
+    }
 
     func build(widget: Widget) -> RenderWidget {
         var current = widget
@@ -70,14 +125,14 @@ public class BuildContext {
         }
     }
 
-    func buildIteration(root: Widget) {
-        guard let rootRenderWidget = build(widget: root) as? WindowRenderWidget else {
+    func buildIteration() {
+        guard let rootRender = build(widget: app.root) as? WindowRenderWidget else {
             preconditionFailure("Root widget must be WindowRenderWidget.")
         }
 
-        updateNodeIfNecessary(node: rootNode, widget: rootRenderWidget, onChange: {n in
+        updateNodeIfNecessary(node: rootNode, widget: rootRender, onChange: {n in
             rootNode = n
-            uiControlShow(rootNode!.ctrl)
+            gtk_widget_show_all(rootNode!.gwidget)
         })
 
         activeStates = reActiveStates
@@ -179,8 +234,8 @@ protocol RenderWidget: Widget {
 
 
 protocol RenderNode {
-    var ctrl: UnsafeMutablePointer<uiControl> { get }
-    init(withControl ctrl: UnsafeMutablePointer<uiControl>)
+    var gwidget: UnsafeMutablePointer<GtkWidget> { get }
+    init(withWidget gwidget: UnsafeMutablePointer<GtkWidget>)
     func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
             RenderApplicationResult
     func applyChangesReceivingNode(ctx: BuildContext, from widget: RenderWidget) ->
@@ -201,11 +256,14 @@ extension RenderNode {
 }
 
 
-class RenderNodeDefaults {
-    var ctrl: UnsafeMutablePointer<uiControl>
+class RenderNodeDefaults<GtkWidgetType> {
+    var gwidget: UnsafeMutablePointer<GtkWidget>
+    var gwidgetCast: UnsafeMutablePointer<GtkWidgetType> {
+        return gcast(gwidget, to: GtkWidgetType.self)
+    }
 
-    init(withControl ctrl: UnsafeMutablePointer<uiControl>) {
-        self.ctrl = ctrl
+    init(withWidget gwidget: UnsafeMutablePointer<GtkWidget>) {
+        self.gwidget = gwidget
     }
 }
 
@@ -236,8 +294,8 @@ struct WindowRenderWidget: RenderWidget, Hashable {
     }
 
     func buildRenderNode(ctx: BuildContext) -> RenderNode {
-        let ctrl = uiNewWindow(title, Int32(width), Int32(height), hasTitleBar ? 1 : 0)
-        let node = WindowRenderNode(withControl: UnsafeMutablePointer(ctrl!))
+        let gwidget = gtk_application_window_new(ctx.gtkApp)
+        let node = WindowRenderNode(withWidget: UnsafeMutablePointer(gwidget!))
         return node.applyChangesReceivingNode(ctx: ctx, from: self)
     }
 }
@@ -253,18 +311,18 @@ struct ButtonRenderWidget: RenderWidget, Hashable {
     }
 
     func buildRenderNode(ctx: BuildContext) -> RenderNode {
-        let ctrl = uiNewButton(text)
-        let node = ButtonRenderNode(withControl: UnsafeMutablePointer(ctrl!))
+        let gwidget = gtk_button_new()
+        let node = ButtonRenderNode(withWidget: UnsafeMutablePointer(gwidget!))
         return node.applyChangesReceivingNode(ctx: ctx, from: self)
     }
 }
 
 
-class WindowRenderNode: RenderNodeDefaults, RenderNode {
+class WindowRenderNode: RenderNodeDefaults<GtkWindow>, RenderNode {
     var child: RenderNode?
 
-    required override init(withControl ctrl: UnsafeMutablePointer<uiControl>) {
-        super.init(withControl: ctrl)
+    required override init(withWidget gwidget: UnsafeMutablePointer<GtkWidget>) {
+        super.init(withWidget: gwidget)
     }
 
     func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
@@ -274,10 +332,17 @@ class WindowRenderNode: RenderNodeDefaults, RenderNode {
                 widget.buildRenderNode(ctx: ctx))
         }
 
+        gtk_window_set_title(gwidgetCast, window.title)
+        gtk_window_set_default_size(gwidgetCast, gint(window.width), gint(window.height))
+
         ctx.updateNodeIfNecessary(node: child, widget: window.child.widget,
             onChange: {n in
+                let gcontainer = gcast(gwidget, to: GtkContainer.self)
+                if (child != nil) {
+                    gtk_container_remove(gcontainer, child!.gwidget)
+                }
                 child = n
-                uiWindowSetChild(OpaquePointer(ctrl), child!.ctrl)
+                gtk_container_add(gcontainer, child!.gwidget)
             }
         )
 
@@ -286,9 +351,9 @@ class WindowRenderNode: RenderNodeDefaults, RenderNode {
 }
 
 
-class ButtonRenderNode: RenderNodeDefaults, RenderNode {
-    required override init(withControl ctrl: UnsafeMutablePointer<uiControl>) {
-        super.init(withControl: ctrl)
+class ButtonRenderNode: RenderNodeDefaults<GtkButton>, RenderNode {
+    required override init(withWidget gwidget: UnsafeMutablePointer<GtkWidget>) {
+        super.init(withWidget: gwidget)
     }
 
     func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
@@ -298,7 +363,7 @@ class ButtonRenderNode: RenderNodeDefaults, RenderNode {
                 widget.buildRenderNode(ctx: ctx))
         }
 
-        uiButtonSetText(OpaquePointer(ctrl), button.text)
+        gtk_button_set_label(gwidgetCast, button.text)
         return RenderApplicationResult.keepSelf
     }
 }
@@ -315,29 +380,7 @@ public struct Application {
 }
 
 
-class GlobalContext {
-    init() {
-        var opts = uiInitOptions()
-        if let err = uiInit(&opts) {
-            fatalError("Failed to initialize libui: \(err)")
-            // uiFreeInitError(err)
-        }
-    }
-
-    deinit {
-        uiUninit()
-    }
-
-    func run(app: Application) {
-        let ctx = BuildContext()
-        ctx.buildIteration(root: app.root)
-        uiMain()
-    }
-
-    static var instance = GlobalContext()
-}
-
-
 public func run(app: Application) {
-    GlobalContext.instance.run(app: app)
+    let ctx = BuildContext(app: app)
+    ctx.runApp()
 }
