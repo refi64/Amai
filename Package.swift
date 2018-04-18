@@ -10,7 +10,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/kirbyfan64/Cui", from: "0.1.0"),
-        .package(url: "https://github.com/tonyarnold/Differ", from: "1.2.0"),
+        // .package(url: "https://github.com/tonyarnold/Differ", from: "1.2.0"),
     ],
     targets: [
         .target(name: "Amai", dependencies: ["Cui"]),

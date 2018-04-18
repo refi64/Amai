@@ -16,4 +16,4 @@ struct Home: StatelessWidget, Hashable {
     }
 }
 
-show(root: Home())
+run(app: Application(id: "com.refi64.amai.demo", root: Home()))

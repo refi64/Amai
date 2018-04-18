@@ -31,17 +31,6 @@ public class AutoKey<Wrapped: Hashable>: Key {
 }
 
 
-func updateNodeIfNecessary(node: RenderNode?, widget: RenderWidget,
-                           onChange: (RenderNode) -> Void) {
-    let applicationResult = node?.applyChanges(widget) ??
-                            RenderApplicationResult.newNode(
-                                node: widget.buildRenderNode())
-    if case RenderApplicationResult.newNode(let newNode) = applicationResult {
-        onChange(newNode)
-    }
-}
-
-
 public class BuildContext {
     var activeStates: [Key: State] = [:]
     var reActiveStates: [Key: State] = [:]
@@ -69,6 +58,16 @@ public class BuildContext {
 
         preconditionFailure("Tried building \(widget), but didn't get RenderWidget " +
                             "after \(maxIterations) iterations.")
+    }
+
+    func updateNodeIfNecessary(node: RenderNode?, widget: RenderWidget,
+                               onChange: (RenderNode) -> Void) {
+        let applicationResult = node?.applyChanges(ctx: self, from: widget) ??
+                                RenderApplicationResult.newNode(
+                                    node: widget.buildRenderNode(ctx: self))
+        if case RenderApplicationResult.newNode(let newNode) = applicationResult {
+            onChange(newNode)
+        }
     }
 
     func buildIteration(root: Widget) {
@@ -175,21 +174,24 @@ public struct Button: StatelessWidget, HashableWidget {
 
 
 protocol RenderWidget: Widget {
-    func buildRenderNode() -> RenderNode
+    func buildRenderNode(ctx: BuildContext) -> RenderNode
 }
 
 
 protocol RenderNode {
     var ctrl: UnsafeMutablePointer<uiControl> { get }
     init(withControl ctrl: UnsafeMutablePointer<uiControl>)
-    func applyChanges(_ widget: RenderWidget) -> RenderApplicationResult
-    func applyChangesReceivingNode(_ widget: RenderWidget) -> RenderNode
+    func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
+            RenderApplicationResult
+    func applyChangesReceivingNode(ctx: BuildContext, from widget: RenderWidget) ->
+            RenderNode
 }
 
 
 extension RenderNode {
-    func applyChangesReceivingNode(_ widget: RenderWidget) -> RenderNode {
-        switch applyChanges(widget) {
+    func applyChangesReceivingNode(ctx: BuildContext, from widget: RenderWidget)
+            -> RenderNode {
+        switch applyChanges(ctx: ctx, from: widget) {
         case .keepSelf:
             return self
         case .newNode(let node):
@@ -233,10 +235,10 @@ struct WindowRenderWidget: RenderWidget, Hashable {
         self.key = AutoKey(self)
     }
 
-    func buildRenderNode() -> RenderNode {
+    func buildRenderNode(ctx: BuildContext) -> RenderNode {
         let ctrl = uiNewWindow(title, Int32(width), Int32(height), hasTitleBar ? 1 : 0)
         let node = WindowRenderNode(withControl: UnsafeMutablePointer(ctrl!))
-        return node.applyChangesReceivingNode(self)
+        return node.applyChangesReceivingNode(ctx: ctx, from: self)
     }
 }
 
@@ -250,10 +252,10 @@ struct ButtonRenderWidget: RenderWidget, Hashable {
         self.key = AutoKey(self)
     }
 
-    func buildRenderNode() -> RenderNode {
+    func buildRenderNode(ctx: BuildContext) -> RenderNode {
         let ctrl = uiNewButton(text)
         let node = ButtonRenderNode(withControl: UnsafeMutablePointer(ctrl!))
-        return node.applyChangesReceivingNode(self)
+        return node.applyChangesReceivingNode(ctx: ctx, from: self)
     }
 }
 
@@ -265,15 +267,19 @@ class WindowRenderNode: RenderNodeDefaults, RenderNode {
         super.init(withControl: ctrl)
     }
 
-    func applyChanges(_ widget: RenderWidget) -> RenderApplicationResult {
+    func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
+            RenderApplicationResult {
         guard let window = widget as? WindowRenderWidget else {
-            return RenderApplicationResult.newNode(node: widget.buildRenderNode())
+            return RenderApplicationResult.newNode(node:
+                widget.buildRenderNode(ctx: ctx))
         }
 
-        updateNodeIfNecessary(node: child, widget: window.child.widget, onChange: {n in
-            child = n
-            uiWindowSetChild(OpaquePointer(ctrl), child!.ctrl)
-        })
+        ctx.updateNodeIfNecessary(node: child, widget: window.child.widget,
+            onChange: {n in
+                child = n
+                uiWindowSetChild(OpaquePointer(ctrl), child!.ctrl)
+            }
+        )
 
         return RenderApplicationResult.keepSelf
     }
@@ -285,13 +291,26 @@ class ButtonRenderNode: RenderNodeDefaults, RenderNode {
         super.init(withControl: ctrl)
     }
 
-    func applyChanges(_ widget: RenderWidget) -> RenderApplicationResult {
+    func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
+            RenderApplicationResult {
         guard let button = widget as? ButtonRenderWidget else {
-            return RenderApplicationResult.newNode(node: widget.buildRenderNode())
+            return RenderApplicationResult.newNode(node:
+                widget.buildRenderNode(ctx: ctx))
         }
 
         uiButtonSetText(OpaquePointer(ctrl), button.text)
         return RenderApplicationResult.keepSelf
+    }
+}
+
+
+public struct Application {
+    public var id: String
+    public var root: Widget
+
+    public init(id: String, root: Widget) {
+        self.id = id
+        self.root = root
     }
 }
 
@@ -309,9 +328,9 @@ class GlobalContext {
         uiUninit()
     }
 
-    func show(root: Widget) {
+    func run(app: Application) {
         let ctx = BuildContext()
-        ctx.buildIteration(root: root)
+        ctx.buildIteration(root: app.root)
         uiMain()
     }
 
@@ -319,6 +338,6 @@ class GlobalContext {
 }
 
 
-public func show(root: Widget) {
-    GlobalContext.instance.show(root: root)
+public func run(app: Application) {
+    GlobalContext.instance.run(app: app)
 }
