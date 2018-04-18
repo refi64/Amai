@@ -14,32 +14,22 @@ public class Key: Hashable {
 }
 
 
-class WidgetWrapper: Equatable, Hashable {
-    var widget: Widget
+public class AutoKey<Wrapped: Hashable>: Key {
+    var wrapped: Wrapped
 
-    init(wraps widget: Widget) {
-        self.widget = widget
+    public init(_ wrapped: Wrapped) {
+        self.wrapped = wrapped
     }
 
-    static func == (lhs: WidgetWrapper, rhs: WidgetWrapper) -> Bool {
-        if lhs.widget.key != nil && rhs.widget.key != nil {
-            return lhs.widget.key === rhs.widget.key
-        }
-        else if lhs.widget.key == nil && rhs.widget.key == nil {
-            return lhs.widget.equals(rhs.widget)
-        } else {
-            return false
-        }
+    public static func == (lhs: AutoKey, rhs: AutoKey) -> Bool {
+        return lhs.wrapped == rhs.wrapped
     }
 
-    var hashValue: Int {
-        if let key = widget.key {
-            return key.hashValue
-        } else {
-            return widget.hashValue
-        }
+    public override var hashValue: Int {
+        return wrapped.hashValue
     }
 }
+
 
 func updateNodeIfNecessary(node: RenderNode?, widget: RenderWidget,
                            onChange: (RenderNode) -> Void) {
@@ -53,8 +43,8 @@ func updateNodeIfNecessary(node: RenderNode?, widget: RenderWidget,
 
 
 public class BuildContext {
-    var activeStates: [WidgetWrapper: State] = [:]
-    var reActiveStates: [WidgetWrapper: State] = [:]
+    var activeStates: [Key: State] = [:]
+    var reActiveStates: [Key: State] = [:]
     var rootNode: RenderNode? = nil
 
     let maxIterations = 500
@@ -67,9 +57,8 @@ public class BuildContext {
             case let stateless as StatelessWidget:
                 current = stateless.build(ctx: self)
             case let stateful as StatefulWidget:
-                let wrapper = WidgetWrapper(wraps: current)
-                let state = activeStates[wrapper] ?? stateful.createState()
-                reActiveStates[wrapper] = state
+                let state = activeStates[current.key] ?? stateful.createState()
+                reActiveStates[current.key] = state
                 current = state.build(ctx: self)
             case let current as RenderWidget:
                 return current as RenderWidget
@@ -98,144 +87,28 @@ public class BuildContext {
 }
 
 
-public protocol TypeErasedHashable {
-    func equals(_ rhs: TypeErasedHashable) -> Bool
-    var hashValue: Int { get }
+public protocol Widget {
+    var key: Key { get }
 }
 
 
-extension TypeErasedHashable where Self: Hashable {
-    public func equals(_ rhs: TypeErasedHashable) -> Bool {
-        guard let rhsSelf = rhs as? Self else {
-            return false
-        }
-        return self == rhsSelf
+public protocol HashableWidget: Widget, Hashable {}
+
+
+public class Keyed<WidgetType>: Equatable, Hashable {
+    public private(set) var widget: WidgetType
+
+    public init(widget: WidgetType) {
+        self.widget = widget
+    }
+
+    public static func == (lhs: Keyed<WidgetType>, rhs: Keyed<WidgetType>) -> Bool {
+        return (lhs.widget as! Widget).key == (rhs.widget as! Widget).key
     }
 
     public var hashValue: Int {
-        return self.hashValue
+        return (widget as! Widget).key.hashValue
     }
-}
-
-
-extension Bool: TypeErasedHashable {}
-extension Int: TypeErasedHashable {}
-extension String: TypeErasedHashable {}
-extension Key: TypeErasedHashable {}
-
-
-struct TypeErasedHashableList: TypeErasedHashable {
-    var items: [TypeErasedHashable] = []
-
-    public func equals(_ rhs: TypeErasedHashable) -> Bool {
-        guard let rhsSelf = rhs as? TypeErasedHashableList else {
-            return false
-        }
-
-        return
-            items.count == rhsSelf.items.count &&
-            zip(items, rhsSelf.items).reduce(true, { (out, items) in
-                let (lhsItem, rhsItem) = items
-                return out && lhsItem.equals(rhsItem)
-            })
-    }
-
-    public var hashValue: Int {
-        return items.reduce(0, { (current: Int, item) in
-            return current ^ (item.hashValue + 0x9e3779b9 + (current << 6) +
-                              (current >> 2))
-        })
-    }
-}
-
-
-public protocol AutoTypeErasedHashable {
-}
-
-
-class AutoTypeErasedHashableRegister {
-    typealias MapCallback<Type> = (Type) -> [TypeErasedHashable]
-    typealias ErasedMapCallback = (Any) -> [TypeErasedHashable]
-
-    static var callbacks: [String: ErasedMapCallback] = [:]
-
-    static func genericName(of tp: Any.Type) -> String? {
-        let descr = String(describing: tp)
-        return descr.contains("<") ?
-                String(descr.split(separator: "<", maxSplits: 1)[0]) : nil
-    }
-
-    public static func register<Type>(_ tp: Type.Type,
-                                      _ callback: @escaping MapCallback<Type>) {
-        guard let name = genericName(of: tp) else {
-            preconditionFailure("\(tp) is not a generic type.")
-        }
-        callbacks[name] = { callback($0 as! Type) }
-    }
-}
-
-
-extension AutoTypeErasedHashable {
-    func children<Type>(of parent: Type) -> [(label: String, value: Any)] {
-        let children = Mirror(reflecting: parent).children
-        return children.filter { $0.label != nil }.map { ($0.label!, $0.value) }
-    }
-
-    func toTypeErasedHashable(parentType: Any.Type, child: (label: String, value: Any))
-                              -> TypeErasedHashable {
-        if let generic = AutoTypeErasedHashableRegister.genericName(
-                            of: type(of: child.value)) {
-            guard let cb = AutoTypeErasedHashableRegister.callbacks[generic] else {
-                preconditionFailure("\(parentType) has no generic callback registered.")
-            }
-            return TypeErasedHashableList(items: cb(child.value))
-        }
-
-        guard let eq = child.value as? TypeErasedHashable else {
-            let childType = type(of: child.value)
-            preconditionFailure("\(parentType).\(child.label): \(childType) is not a " +
-                                "TypeErasedHashable")
-        }
-        return eq
-    }
-
-    public func equals(_ rhs: TypeErasedHashable) -> Bool {
-        let lhsType = type(of: self)
-        let rhsType = type(of: rhs)
-        if lhsType != rhsType {
-            return false
-        }
-
-        let lhsChildren = children(of: self)
-        let rhsChildren = children(of: rhs)
-
-        for (lhsChild, rhsChild) in zip(lhsChildren, rhsChildren) {
-            let lhsEq = toTypeErasedHashable(parentType: lhsType, child: lhsChild)
-            let rhsEq = toTypeErasedHashable(parentType: rhsType, child: rhsChild)
-
-            if !lhsEq.equals(rhsEq) {
-                return false
-            }
-        }
-
-        return true
-    }
-
-    public var hashValue: Int {
-        let parentType = type(of: self)
-        let items = children(of: self).map { toTypeErasedHashable(
-            parentType: parentType, child: $0) }
-        return TypeErasedHashableList(items: items).hashValue
-    }
-}
-
-
-public protocol Widget: TypeErasedHashable {
-    var key: Key? { get }
-}
-
-extension Widget {
-    public var key: Key? { return nil }
 }
 
 
@@ -252,13 +125,13 @@ public protocol StatefulWidget: Widget {
 }
 
 
-public struct Window: StatelessWidget, AutoTypeErasedHashable {
-    public var key: Key?
+public struct Window: StatelessWidget, HashableWidget {
+    public var key: Key = Key()
     public var title: String
     public var width: Int
     public var height: Int
     public var hasTitleBar: Bool
-    public var child: Widget
+    public var child: Keyed<Widget>
 
     public init(key: Key? = nil, title: String = "Amai", width: Int = 800,
                 height: Int = 600, hasTitleBar: Bool = true, child: Widget) {
@@ -266,24 +139,27 @@ public struct Window: StatelessWidget, AutoTypeErasedHashable {
         self.width = width
         self.height = height
         self.hasTitleBar = hasTitleBar
-        self.child = child
+        self.child = Keyed(widget: child)
+
+        self.key = key ?? AutoKey(self)
     }
 
     public func build(ctx: BuildContext) -> Widget {
-        return WindowRenderWidget(title: title, width: width, height: height,
-                                  hasTitleBar: hasTitleBar,
-                                  child: ctx.build(widget: child))
+        return WindowRenderWidget(title: title, width: width,
+                                  height: height, hasTitleBar: hasTitleBar,
+                                  child: ctx.build(widget: child.widget))
     }
 }
 
 
-public struct Button: StatelessWidget, AutoTypeErasedHashable {
-    public var key: Key?
+public struct Button: StatelessWidget, HashableWidget {
+    public var key: Key = Key()
     public var text: String
 
     public init(key: Key? = nil, text: String) {
-        self.key = key
         self.text = text
+
+        self.key = key ?? AutoKey(self)
         // self.callbacks = CallbackGroup(callbacks)
 
         // OnClickId.call(self.callbacks)
@@ -338,12 +214,24 @@ enum RenderApplicationResult {
 }
 
 
-struct WindowRenderWidget: RenderWidget, AutoTypeErasedHashable {
+struct WindowRenderWidget: RenderWidget, Hashable {
+    var key: Key = Key()
     var title: String
     var width: Int
     var height: Int
     var hasTitleBar: Bool
-    var child: RenderWidget
+    var child: Keyed<RenderWidget>
+
+    init(title: String, width: Int, height: Int, hasTitleBar: Bool,
+         child: RenderWidget) {
+        self.title = title
+        self.width = width
+        self.height = height
+        self.hasTitleBar = hasTitleBar
+        self.child = Keyed(widget: child)
+
+        self.key = AutoKey(self)
+    }
 
     func buildRenderNode() -> RenderNode {
         let ctrl = uiNewWindow(title, Int32(width), Int32(height), hasTitleBar ? 1 : 0)
@@ -353,8 +241,14 @@ struct WindowRenderWidget: RenderWidget, AutoTypeErasedHashable {
 }
 
 
-struct ButtonRenderWidget: RenderWidget, AutoTypeErasedHashable {
+struct ButtonRenderWidget: RenderWidget, Hashable {
+    var key: Key = Key()
     var text: String
+
+    init(text: String) {
+        self.text = text
+        self.key = AutoKey(self)
+    }
 
     func buildRenderNode() -> RenderNode {
         let ctrl = uiNewButton(text)
@@ -376,7 +270,7 @@ class WindowRenderNode: RenderNodeDefaults, RenderNode {
             return RenderApplicationResult.newNode(node: widget.buildRenderNode())
         }
 
-        updateNodeIfNecessary(node: child, widget: window.child, onChange: {n in
+        updateNodeIfNecessary(node: child, widget: window.child.widget, onChange: {n in
             child = n
             uiWindowSetChild(OpaquePointer(ctrl), child!.ctrl)
         })
@@ -409,11 +303,6 @@ class GlobalContext {
             fatalError("Failed to initialize libui: \(err)")
             // uiFreeInitError(err)
         }
-
-        AutoTypeErasedHashableRegister.register(Optional<TypeErasedHashable>.self,
-                                                 { $0 != nil ? [$0!] : [] })
-        AutoTypeErasedHashableRegister.register(Array<TypeErasedHashable>.self,
-                                                 { $0 })
     }
 
     deinit {

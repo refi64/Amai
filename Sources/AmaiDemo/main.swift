@@ -1,7 +1,13 @@
 import Amai
 
 
-struct Home: StatelessWidget, AutoTypeErasedHashable {
+struct Home: StatelessWidget, Hashable {
+    var key: Key = Key()
+
+    init() {
+        self.key = AutoKey(self)
+    }
+
     func build(ctx: BuildContext) -> Widget {
         return Window(
             title: "Amai Demo",
