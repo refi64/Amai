@@ -5,11 +5,26 @@ public class Key: Hashable {
     public init() {}
 
     public static func == (lhs: Key, rhs: Key) -> Bool {
-        return lhs === rhs
+        return lhs.equals(rhs)
+    }
+
+    public func equals(_ rhs: Key) -> Bool {
+        return self === rhs
     }
 
     public var hashValue: Int {
         return ObjectIdentifier(self).hashValue
+    }
+}
+
+
+public class NullKey: Key {
+    public override func equals(_ rhs: Key) -> Bool {
+        return true
+    }
+
+    public override var hashValue: Int {
+        return 0
     }
 }
 
@@ -21,8 +36,11 @@ public class AutoKey<Wrapped: Hashable>: Key {
         self.wrapped = wrapped
     }
 
-    public static func == (lhs: AutoKey, rhs: AutoKey) -> Bool {
-        return lhs.wrapped == rhs.wrapped
+    public override func equals(_ rhs: Key) -> Bool {
+        guard let rhsAutoKey = rhs as? AutoKey else {
+            return false
+        }
+        return wrapped == rhsAutoKey.wrapped
     }
 
     public override var hashValue: Int {
@@ -79,9 +97,12 @@ extension GBindings where Self: AnyObject {
 public class BuildContext: GBindings {
     var activeStates: [Key: State] = [:]
     var reActiveStates: [Key: State] = [:]
+    var ensureUpdatedNextIteration: [State] = []
     var rootNode: RenderNode? = nil
     var app: Application
     var gtkApp: UnsafeMutablePointer<GtkApplication>
+    var building: Bool = false
+    var updateSourceId: guint = 0
 
     let maxIterations = 500
 
@@ -102,6 +123,10 @@ public class BuildContext: GBindings {
     }
 
     deinit {
+        if (updateSourceId != 0) {
+            g_source_remove(updateSourceId)
+            updateSourceId = 0
+        }
         g_object_unref(gtkApp)
     }
 
@@ -113,7 +138,7 @@ public class BuildContext: GBindings {
             case let stateless as StatelessWidget:
                 current = stateless.build(ctx: self)
             case let stateful as StatefulWidget:
-                let state = activeStates[current.key] ?? stateful.createState()
+                let state = activeStates[current.key] ?? stateful.createState(ctx: self)
                 reActiveStates[current.key] = state
                 current = state.build(ctx: self)
             case let current as RenderWidget:
@@ -127,19 +152,22 @@ public class BuildContext: GBindings {
                             "after \(maxIterations) iterations.")
     }
 
-    func updateNodeIfNecessary(node: RenderNode?, widget: RenderWidget,
+    func updateNodeIfNecessary(node: RenderNode?, widget: Widget,
                                onChange: (RenderNode) -> Void) {
-        let applicationResult = node?.applyChanges(ctx: self, from: widget) ??
+        let renderWidget = build(widget: widget)
+
+        let applicationResult = node?.applyChanges(ctx: self, from: renderWidget) ??
                                 RenderApplicationResult.newNode(
-                                    node: widget.buildRenderNode(ctx: self))
+                                    node: renderWidget.buildRenderNode(ctx: self))
         if case RenderApplicationResult.newNode(let newNode) = applicationResult {
             onChange(newNode)
         }
     }
 
     func buildIteration() {
-        guard let rootRender = build(widget: app.root) as? WindowRenderWidget else {
-            preconditionFailure("Root widget must be WindowRenderWidget.")
+        building = true
+        guard let rootRender = build(widget: app.root) as? Window else {
+            preconditionFailure("Root widget must be Window.")
         }
 
         updateNodeIfNecessary(node: rootNode, widget: rootRender, onChange: {n in
@@ -149,6 +177,27 @@ public class BuildContext: GBindings {
 
         activeStates = reActiveStates
         reActiveStates.removeAll()
+
+        building = false
+    }
+
+    public func setState(setter: () -> Void) {
+        precondition(!building, "Cannot call setState while building.")
+
+        setter()
+
+        if (updateSourceId == 0) {
+            let closure: @convention(c) (UnsafeMutableRawPointer?) -> Int32 =
+                {(cself) in
+                    let ctx = BuildContext.from(cself!)
+                    ctx.buildIteration()
+                    ctx.updateSourceId = 0
+                    return 0
+                }
+
+            updateSourceId = g_idle_add_full(G_PRIORITY_HIGH, closure,
+                                             getPointer(fromObject: self), nil)
+        }
     }
 }
 
@@ -316,17 +365,37 @@ public protocol StatelessWidget: Widget {
     func build(ctx: BuildContext) -> Widget
 }
 
-public protocol State {
-    func build(ctx: BuildContext) -> Widget
-}
-
 public protocol StatefulWidget: Widget {
-    func createState() -> State
+    func createState(ctx: BuildContext) -> State
 }
 
 
-public struct Window: StatelessWidget, HashableWidget {
-    public var key: Key = Key()
+public protocol State {
+    var ctx: BuildContext { get }
+    func build(ctx: BuildContext) -> Widget
+    func setState(setter: () -> Void)
+}
+
+extension State {
+    public func setState(setter: () -> Void) {
+        ctx.setState(setter: setter)
+    }
+}
+
+
+protocol RenderWidget: Widget {
+    func buildRenderNode(ctx: BuildContext) -> RenderNode
+}
+
+
+enum RenderApplicationResult {
+    case keepSelf
+    case newNode(node: RenderNode)
+}
+
+
+public struct Window: RenderWidget, HashableWidget {
+    public var key: Key = NullKey()
     public var title: String
     public var width: Int
     public var height: Int
@@ -344,16 +413,15 @@ public struct Window: StatelessWidget, HashableWidget {
         self.key = key ?? AutoKey(self)
     }
 
-    public func build(ctx: BuildContext) -> Widget {
-        return WindowRenderWidget(title: title, width: width,
-                                  height: height, hasTitleBar: hasTitleBar,
-                                  child: ctx.build(widget: child.widget))
+    func buildRenderNode(ctx: BuildContext) -> RenderNode {
+        let node = WindowRenderNode(ctx: ctx)
+        return node.applyChangesReceivingNode(ctx: ctx, from: self)
     }
 }
 
 
-public struct Button: StatelessWidget, HashableWidget {
-    public var key: Key = Key()
+public struct Button: RenderWidget, HashableWidget {
+    public var key: Key = NullKey()
     public var text: String
     var connections: SignalConnectionGroup
 
@@ -364,22 +432,18 @@ public struct Button: StatelessWidget, HashableWidget {
         self.key = key ?? AutoKey(self)
     }
 
-    public func build(ctx: BuildContext) -> Widget {
-        return ButtonRenderWidget(text: text, connections: connections)
+    func buildRenderNode(ctx: BuildContext) -> RenderNode {
+        let node = ButtonRenderNode(ctx: ctx)
+        return node.applyChangesReceivingNode(ctx: ctx, from: self)
     }
 
     public static let onClick: SignalId<() -> Void> = SignalId()
 }
 
 
-protocol RenderWidget: Widget {
-    func buildRenderNode(ctx: BuildContext) -> RenderNode
-}
-
-
 protocol RenderNode {
     var gwidget: UnsafeMutablePointer<GtkWidget> { get }
-    init(withWidget gwidget: UnsafeMutablePointer<GtkWidget>)
+    init(ctx: BuildContext)
     func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
             RenderApplicationResult
     func applyChangesReceivingNode(ctx: BuildContext, from widget: RenderWidget) ->
@@ -412,69 +476,17 @@ class RenderNodeDefaults<GtkWidgetType> {
 }
 
 
-enum RenderApplicationResult {
-    case keepSelf
-    case newNode(node: RenderNode)
-}
-
-
-struct WindowRenderWidget: RenderWidget, Hashable {
-    var key: Key = Key()
-    var title: String
-    var width: Int
-    var height: Int
-    var hasTitleBar: Bool
-    var child: Keyed<RenderWidget>
-
-    init(title: String, width: Int, height: Int, hasTitleBar: Bool,
-         child: RenderWidget) {
-        self.title = title
-        self.width = width
-        self.height = height
-        self.hasTitleBar = hasTitleBar
-        self.child = Keyed(widget: child)
-
-        self.key = AutoKey(self)
-    }
-
-    func buildRenderNode(ctx: BuildContext) -> RenderNode {
-        let gwidget = gtk_application_window_new(ctx.gtkApp)
-        let node = WindowRenderNode(withWidget: UnsafeMutablePointer(gwidget!))
-        return node.applyChangesReceivingNode(ctx: ctx, from: self)
-    }
-}
-
-
-struct ButtonRenderWidget: RenderWidget, Hashable {
-    var key: Key = Key()
-    var text: String
-    var connections: SignalConnectionGroup
-
-    init(text: String, connections: SignalConnectionGroup) {
-        self.text = text
-        self.connections = connections
-
-        self.key = AutoKey(self)
-    }
-
-    func buildRenderNode(ctx: BuildContext) -> RenderNode {
-        let gwidget = gtk_button_new()
-        let node = ButtonRenderNode(withWidget: UnsafeMutablePointer(gwidget!))
-        return node.applyChangesReceivingNode(ctx: ctx, from: self)
-    }
-}
-
-
 class WindowRenderNode: RenderNodeDefaults<GtkWindow>, RenderNode {
     var child: RenderNode?
 
-    required override init(withWidget gwidget: UnsafeMutablePointer<GtkWidget>) {
+    required init(ctx: BuildContext) {
+        let gwidget = UnsafeMutablePointer(gtk_application_window_new(ctx.gtkApp)!)
         super.init(withWidget: gwidget)
     }
 
     func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
             RenderApplicationResult {
-        guard let window = widget as? WindowRenderWidget else {
+        guard let window = widget as? Window else {
             return RenderApplicationResult.newNode(node:
                 widget.buildRenderNode(ctx: ctx))
         }
@@ -501,7 +513,8 @@ class WindowRenderNode: RenderNodeDefaults<GtkWindow>, RenderNode {
 class ButtonRenderNode: RenderNodeDefaults<GtkButton>, RenderNode, GBindings {
     var connections: SignalConnectionGroup? = nil
 
-    required override init(withWidget gwidget: UnsafeMutablePointer<GtkWidget>) {
+    required init(ctx: BuildContext) {
+        let gwidget = UnsafeMutablePointer(gtk_button_new()!)
         super.init(withWidget: gwidget)
 
         let closure: @convention(c)
@@ -514,7 +527,7 @@ class ButtonRenderNode: RenderNodeDefaults<GtkButton>, RenderNode, GBindings {
 
     func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
             RenderApplicationResult {
-        guard let button = widget as? ButtonRenderWidget else {
+        guard let button = widget as? Button else {
             return RenderApplicationResult.newNode(node:
                 widget.buildRenderNode(ctx: ctx))
         }
