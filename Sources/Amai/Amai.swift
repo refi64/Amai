@@ -54,20 +54,34 @@ func gCallbackFrom<Func>(closure: Func) -> GCallback {
 }
 
 
-public class BuildContext {
+protocol GBindings {
+    static func from(_ cself: UnsafeMutableRawPointer) -> Self
+    func connect<GObj, Closure>(toObject: UnsafeMutablePointer<GObj>, signal: String,
+                                closure: Closure)
+}
+
+
+extension GBindings where Self: AnyObject {
+    static func from(_ cself: UnsafeMutableRawPointer) -> Self {
+        return getObject(fromPointer: cself, to: Self.self)
+    }
+
+    func connect<GObj, Closure>(toObject object: UnsafeMutablePointer<GObj>,
+                                signal: String, closure: Closure) {
+        g_signal_connect_data(UnsafeMutableRawPointer(object), signal,
+                              gCallbackFrom(closure: closure),
+                              getPointer(fromObject: self), nil,
+                              GConnectFlags(rawValue: 0))
+    }
+}
+
+
+public class BuildContext: GBindings {
     var activeStates: [Key: State] = [:]
     var reActiveStates: [Key: State] = [:]
     var rootNode: RenderNode? = nil
     var app: Application
     var gtkApp: UnsafeMutablePointer<GtkApplication>
-
-    var cself: UnsafeMutableRawPointer {
-        return getPointer(fromObject: self)
-    }
-
-    static func from(_ cself: UnsafeMutableRawPointer) -> BuildContext {
-        return getObject(fromPointer: cself, to: BuildContext.self)
-    }
 
     let maxIterations = 500
 
@@ -80,9 +94,7 @@ public class BuildContext {
              UnsafeMutableRawPointer) -> Void = {(app, cself) in
                 BuildContext.from(cself).buildIteration()
             }
-        g_signal_connect_data(gcast(gtkApp, to: GObject.self), "activate",
-                              gCallbackFrom(closure: closure), cself, nil,
-                              GConnectFlags(rawValue: 0))
+        connect(toObject: gtkApp, signal: "activate", closure: closure)
     }
 
     func runApp() {
@@ -137,6 +149,140 @@ public class BuildContext {
 
         activeStates = reActiveStates
         reActiveStates.removeAll()
+    }
+}
+
+
+protocol TypeErasedHashable {
+    func equals(_ rhs: TypeErasedHashable) -> Bool
+    var hashValue: Int { get }
+}
+
+
+extension TypeErasedHashable where Self: AnyObject {
+    func equals(_ rhs: TypeErasedHashable) -> Bool {
+        guard let rhsSelf = rhs as? Self else {
+            return false
+        }
+        return self === rhsSelf
+    }
+
+    var hashValue: Int {
+        return ObjectIdentifier(self).hashValue
+    }
+}
+
+
+struct TypeErasedHashableWrapper: Hashable {
+    var inner: TypeErasedHashable
+
+    static func == (lhs: TypeErasedHashableWrapper, rhs: TypeErasedHashableWrapper) ->
+            Bool {
+        return lhs.inner.equals(rhs.inner)
+    }
+
+    public var hashValue: Int {
+        return inner.hashValue
+    }
+}
+
+
+public class Handler<Func>: TypeErasedHashable {
+    var function: Func
+
+    public init(_ function: Func) {
+        self.function = function
+    }
+}
+
+
+public class MethodHandler<Parent, Func>: TypeErasedHashable {
+    var method: (Parent) -> Func
+
+    public init(_ method: @escaping (Parent) -> Func) {
+        self.method = method
+    }
+
+    public func bind(to parent: Parent) -> BoundMethodHandler<Parent, Func> {
+        return BoundMethodHandler(createdBy: self, function: self.method(parent))
+    }
+}
+
+
+public class BoundMethodHandler<Parent, Func>: Handler<Func> {
+    weak var creator: MethodHandler<Parent, Func>!
+
+    public init(createdBy creator: MethodHandler<Parent, Func>, function: Func) {
+        self.creator = creator
+        super.init(function)
+    }
+
+    func equals(rhs: TypeErasedHashable) -> Bool {
+        guard let rhsHandler = rhs as? BoundMethodHandler<Parent, Func> else {
+            return false
+        }
+        return self.creator.equals(rhsHandler.creator)
+    }
+
+    public var hashValue: Int {
+        return self.creator.hashValue
+    }
+}
+
+
+public struct SignalConnection: Hashable {
+    var signal: TypeErasedHashableWrapper
+    var handler: TypeErasedHashableWrapper
+}
+
+
+infix operator =>
+
+
+public class SignalId<Func>: TypeErasedHashable {
+    public static func => (signal: SignalId<Func>, handler: Handler<Func>) ->
+            SignalConnection {
+        return SignalConnection(signal: TypeErasedHashableWrapper(inner: signal),
+                                handler: TypeErasedHashableWrapper(inner: handler))
+    }
+
+    public static func == (lhs: SignalId<Func>, rhs: SignalId<Func>) -> Bool {
+        return lhs === rhs
+    }
+
+    public var hashValue: Int {
+        return ObjectIdentifier(self).hashValue
+    }
+}
+
+
+public struct SignalConnectionGroup: Hashable {
+    var connections: [SignalConnection]
+
+    public init(_ connections: [SignalConnection]) {
+        self.connections = connections
+    }
+
+    public func map<Func>(signal: SignalId<Func>, _ callback: (Func) -> Bool) {
+        for connection in connections {
+            guard let connSignal = connection.signal.inner as? SignalId<Func> else {
+                continue
+            }
+            guard connSignal == signal else {
+                continue
+            }
+
+            let handler = connection.handler.inner as! Handler<Func>
+            if !callback(handler.function) {
+                break
+            }
+        }
+    }
+
+    public var hashValue: Int {
+        return connections.reduce(0) {(hash: Int, item) in
+            hash ^ (item.hashValue + 0x9e3779b9 + (hash << 6) + (hash >> 2))
+        }
     }
 }
 
@@ -209,22 +355,20 @@ public struct Window: StatelessWidget, HashableWidget {
 public struct Button: StatelessWidget, HashableWidget {
     public var key: Key = Key()
     public var text: String
+    var connections: SignalConnectionGroup
 
-    public init(key: Key? = nil, text: String) {
+    public init(key: Key? = nil, text: String, _ connections: SignalConnection...) {
         self.text = text
+        self.connections = SignalConnectionGroup(connections)
 
         self.key = key ?? AutoKey(self)
-        // self.callbacks = CallbackGroup(callbacks)
-
-        // OnClickId.call(self.callbacks)
     }
 
     public func build(ctx: BuildContext) -> Widget {
-        return ButtonRenderWidget(text: text)
+        return ButtonRenderWidget(text: text, connections: connections)
     }
 
-    // typealias OnClickId: CallbackId<() -> Void>
-    // public func onClick(_ cb: OnClickId) -> AnyCallbackId { return OnClickId(cb) }
+    public static let onClick: SignalId<() -> Void> = SignalId()
 }
 
 
@@ -304,9 +448,12 @@ struct WindowRenderWidget: RenderWidget, Hashable {
 struct ButtonRenderWidget: RenderWidget, Hashable {
     var key: Key = Key()
     var text: String
+    var connections: SignalConnectionGroup
 
-    init(text: String) {
+    init(text: String, connections: SignalConnectionGroup) {
         self.text = text
+        self.connections = connections
+
         self.key = AutoKey(self)
     }
 
@@ -351,9 +498,18 @@ class WindowRenderNode: RenderNodeDefaults<GtkWindow>, RenderNode {
 }
 
 
-class ButtonRenderNode: RenderNodeDefaults<GtkButton>, RenderNode {
+class ButtonRenderNode: RenderNodeDefaults<GtkButton>, RenderNode, GBindings {
+    var connections: SignalConnectionGroup? = nil
+
     required override init(withWidget gwidget: UnsafeMutablePointer<GtkWidget>) {
         super.init(withWidget: gwidget)
+
+        let closure: @convention(c)
+            (UnsafeMutablePointer<GtkButton>,
+             UnsafeMutableRawPointer) -> Void = {(_, cself) in
+                ButtonRenderNode.from(cself).clicked()
+            }
+        connect(toObject: gwidget, signal: "clicked", closure: closure)
     }
 
     func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
@@ -364,7 +520,17 @@ class ButtonRenderNode: RenderNodeDefaults<GtkButton>, RenderNode {
         }
 
         gtk_button_set_label(gwidgetCast, button.text)
+        connections = button.connections
+
         return RenderApplicationResult.keepSelf
+    }
+
+    func clicked() {
+        guard let connections = self.connections else {
+            return
+        }
+
+        connections.map(signal: Button.onClick) { $0(); return true }
     }
 }
 

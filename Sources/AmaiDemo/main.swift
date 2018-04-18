@@ -8,12 +8,25 @@ struct Home: StatelessWidget, Hashable {
         self.key = AutoKey(self)
     }
 
+    static let onClickStaticHandler = Handler() {
+        print("onClickStaticHandler")
+    }
+
+    func onClickMethod() {
+        print("onClickMethod")
+    }
+    static let onClickMethodHandler = MethodHandler(Home.onClickMethod)
+
     func build(ctx: BuildContext) -> Widget {
         return Window(
             title: "Amai Demo",
-            width: 640,
-            height: 480,
-            child: Button(text: "Hello, world!")
+            width: 200,
+            height: 100,
+            child: Button(
+                text: "Hello, world!",
+                Button.onClick => Home.onClickStaticHandler,
+                Button.onClick => Home.onClickMethodHandler.bind(to: self)
+            )
         )
     }
 }
