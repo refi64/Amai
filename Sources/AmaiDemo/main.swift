@@ -22,7 +22,7 @@ class IncButtonState: State {
             homogenous: Grid.Homogenous.all,
             items: [
                 Grid.Item(
-                    child: Button(text: "This does nothing.")
+                    child: Label(text: "This is a label.")
                 ),
                 Grid.Item(
                     position: Grid.Position.right,

@@ -411,6 +411,24 @@ enum RenderApplicationResult {
 }
 
 
+public enum Justify: Hashable {
+    case left, right, center, fill
+
+    func toGtk() -> GtkJustification {
+        switch self {
+        case Justify.left:
+            return GTK_JUSTIFY_LEFT
+        case Justify.right:
+            return GTK_JUSTIFY_RIGHT
+        case Justify.center:
+            return GTK_JUSTIFY_CENTER
+        case Justify.fill:
+            return GTK_JUSTIFY_FILL
+        }
+    }
+}
+
+
 public struct Window: RenderWidget, HashableWidget {
     public var key: Key = NullKey()
     public var title: String
@@ -432,6 +450,25 @@ public struct Window: RenderWidget, HashableWidget {
 
     func buildRenderNode(ctx: BuildContext) -> RenderNode {
         let node = WindowRenderNode(ctx: ctx)
+        return node.applyChangesReceivingNode(ctx: ctx, from: self)
+    }
+}
+
+
+public struct Label: RenderWidget, HashableWidget {
+    public var key: Key = NullKey()
+    public var text: String
+    public var justify: Justify
+
+    public init(key: Key? = nil, text: String, justify: Justify = Justify.left) {
+        self.text = text
+        self.justify = justify
+
+        self.key = key ?? AutoKey(self)
+    }
+
+    func buildRenderNode(ctx: BuildContext) -> RenderNode {
+        let node = LabelRenderNode(ctx: ctx)
         return node.applyChangesReceivingNode(ctx: ctx, from: self)
     }
 }
@@ -655,6 +692,27 @@ class WindowRenderNode: RenderNodeDefaults<GtkWindow>, RenderNode {
 }
 
 
+class LabelRenderNode: RenderNodeDefaults<GtkLabel>, RenderNode, GBindings {
+    required init(ctx: BuildContext) {
+        let gwidget = UnsafeMutablePointer(gtk_label_new("")!)
+        super.init(withWidget: gwidget)
+    }
+
+    func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
+            RenderApplicationResult {
+        guard let label = widget as? Label else {
+            return RenderApplicationResult.newNode(node:
+                widget.buildRenderNode(ctx: ctx))
+        }
+
+        gtk_label_set_text(gwidgetCast, label.text)
+        gtk_label_set_justify(gwidgetCast, label.justify.toGtk())
+
+        return RenderApplicationResult.keepSelf
+    }
+}
+
+
 class ButtonRenderNode: RenderNodeDefaults<GtkButton>, RenderNode, GBindings {
     var connections: SignalConnectionGroup? = nil
 
@@ -784,7 +842,6 @@ class GridRenderNode: RenderNodeDefaults<GtkGrid>, RenderNode, GBindings {
                     gtk_widget_destroy(childNode.gwidget)
                 }
 
-                print("\(origin.x) \(origin.y)")
                 gtk_grid_attach(gwidgetCast, children[i].gwidget, gint(origin.x),
                                 gint(origin.y), gint(item.size.x), gint(item.size.y))
             }
