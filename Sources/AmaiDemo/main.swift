@@ -14,12 +14,41 @@ class IncButtonState: State {
             count += 1
         }
     }
-    static let onClickHandler = MethodHandler(IncButtonState.onClick)
+    let onClickHandler = MethodHandler(IncButtonState.onClick)
 
     func build(ctx: BuildContext) -> Widget {
-        return Button(
-            text: "You have pressed this \(count) times.",
-            Button.onClick => IncButtonState.onClickHandler.bind(to: self)
+        return Grid(
+            defaultPosition: Grid.Position.below,
+            homogenous: Grid.Homogenous.all,
+            items: [
+                Grid.Item(
+                    child: Button(text: "This does nothing.")
+                ),
+                Grid.Item(
+                    position: Grid.Position.right,
+                    child: Button(
+                        text: "You have pressed this \(count) times.",
+                        Button.onClick => onClickHandler.bind(to: self)
+                    )
+                ),
+                Grid.Item(
+                    position: Grid.Position.below,
+                    child: Button(text: "This should be beneath the above")
+                ),
+                Grid.Item(
+                    position: Grid.Position.left,
+                    child: Button(text: "And going full circle")
+                ),
+                Grid.Item(
+                    from: Grid.Location.absolute(x: 1, y: 2),
+                    size: Grid.Size(x: 2, y: 2),
+                    child: Button(text: "Over yonder!")
+                ),
+                Grid.Item(
+                    from: Grid.Location.relative(x: -1, y: 0),
+                    child: Button(text: "...and to the left!")
+                )
+            ]
         )
     }
 }
@@ -28,8 +57,8 @@ class IncButtonState: State {
 struct IncButton: StatefulWidget, Hashable {
     var key: Key = NullKey()
 
-    init() {
-        self.key = AutoKey(self)
+    init(key: Key? = nil) {
+        self.key = key ?? AutoKey(self)
     }
 
     func createState(ctx: BuildContext) -> State {
@@ -41,8 +70,8 @@ struct IncButton: StatefulWidget, Hashable {
 struct Home: StatelessWidget, Hashable {
     var key: Key = NullKey()
 
-    init() {
-        self.key = AutoKey(self)
+    init(key: Key? = nil) {
+        self.key = key ?? AutoKey(self)
     }
 
     // static let onClickStaticHandler = Handler() {

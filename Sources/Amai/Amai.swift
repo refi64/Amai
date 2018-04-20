@@ -1,6 +1,25 @@
 import CGtk
 
 
+func combine(hashes: [Int]) -> Int {
+    return hashes.reduce(0) {(result: Int, current) in
+        result ^ (current + 0x9e3779b9 + (result << 6) + (result >> 2))
+    }
+}
+
+
+func hash<T: Hashable>(items: [T]) -> Int {
+    return combine(hashes: items.map { $0.hashValue })
+}
+
+
+extension Array: Hashable where Element: Hashable {
+    public var hashValue: Int {
+        return hash(items: self)
+    }
+}
+
+
 public class Key: Hashable {
     public init() {}
 
@@ -329,9 +348,7 @@ public struct SignalConnectionGroup: Hashable {
     }
 
     public var hashValue: Int {
-        return connections.reduce(0) {(hash: Int, item) in
-            hash ^ (item.hashValue + 0x9e3779b9 + (hash << 6) + (hash >> 2))
-        }
+        return hash(items: connections)
     }
 }
 
@@ -441,6 +458,134 @@ public struct Button: RenderWidget, HashableWidget {
 }
 
 
+public struct Grid: RenderWidget, HashableWidget {
+    public enum Position: Hashable {
+        case unspecified, above, below, left, right
+    }
+
+    public enum Homogenous: Hashable {
+        case all, row, column, none
+    }
+
+    public struct Location: Hashable {
+        public enum How {
+            case absolute, relative
+        }
+
+        public var how: How
+        public var x: Int
+        public var y: Int
+
+        public init(_ how: How, x: Int, y: Int) {
+            self.how = how
+            self.x = x
+            self.y = y
+        }
+
+        public static func absolute(x: Int, y: Int) -> Location {
+            return Location(.absolute, x: x, y: y)
+        }
+
+        public static func relative(x: Int, y: Int) -> Location {
+            return Location(.relative, x: x, y: y)
+        }
+
+        public func with(how: How? = nil,
+                         _ callback: ((x: Int, y: Int)) -> (x: Int, y: Int)) ->
+                Location {
+            let result = callback((x: x, y: y))
+            return Location(how ?? self.how, x: result.x, y: result.y)
+        }
+    }
+
+    public struct Size: Hashable {
+        public var x: Int
+        public var y: Int
+
+        public init(x: Int, y: Int) {
+            self.x = x
+            self.y = y
+        }
+    }
+
+    public struct Item: Hashable {
+        var origin: Location?
+        var size: Size
+        var position: Position
+        var child: Keyed<Widget>
+
+        public init(from origin: Location, to target: Location, child: Widget) {
+            self.origin = origin
+            self.size = Size(x: target.x - origin.x, y: target.y - origin.y)
+            self.child = Keyed(widget: child)
+            self.position = Position.unspecified
+
+            assert(self.size.x > 0, "Target is to the left of origin.")
+            assert(self.size.y > 0, "Target is above origin.")
+        }
+
+        public init(from origin: Location? = nil, size: Size = Size(x: 1, y: 1),
+             position: Position = Position.unspecified, child: Widget) {
+            self.origin = origin
+            self.size = size
+            self.position = position
+            self.child = Keyed(widget: child)
+        }
+
+        public var hashValue: Int {
+            var hashes = [size.hashValue, position.hashValue, child.hashValue]
+
+            if let origin = origin {
+                hashes.append(origin.hashValue)
+            }
+
+            return combine(hashes: hashes)
+        }
+    }
+
+    public var key: Key = NullKey()
+    public var defaultPosition: Position
+    public var homogenous: Homogenous
+    public var items: [Item]
+
+    public init(key: Key? = nil, defaultPosition: Position = Position.unspecified,
+                homogenous: Homogenous = Homogenous.none, items: [Item]) {
+        self.defaultPosition = defaultPosition
+        self.homogenous = homogenous
+        self.items = items
+
+        self.key = key ?? AutoKey(self)
+    }
+
+    public init(key: Key? = nil, homogenous: Homogenous = Homogenous.none, row: [Item]) {
+        self.init(key: key, defaultPosition: Position.right, homogenous: homogenous,
+                  items: row)
+    }
+
+    public init(key: Key? = nil, homogenous: Homogenous = Homogenous.none,
+                row: [Widget]) {
+        self.init(key: key, homogenous: homogenous, row: row.map { Item(child: $0) })
+    }
+
+    public init(key: Key? = nil, homogenous: Homogenous = Homogenous.none,
+                column: [Item]) {
+        self.init(key: key, defaultPosition: Position.below, homogenous: homogenous,
+                  items: column)
+    }
+
+    public init(key: Key? = nil, homogenous: Homogenous = Homogenous.none,
+                column: [Widget]) {
+        self.init(key: key, homogenous: homogenous,
+                  column: column.map { Item(child: $0) })
+    }
+
+    func buildRenderNode(ctx: BuildContext) -> RenderNode {
+        let node = GridRenderNode(ctx: ctx)
+        return node.applyChangesReceivingNode(ctx: ctx, from: self)
+    }
+}
+
+
 protocol RenderNode {
     var gwidget: UnsafeMutablePointer<GtkWidget> { get }
     init(ctx: BuildContext)
@@ -544,6 +689,111 @@ class ButtonRenderNode: RenderNodeDefaults<GtkButton>, RenderNode, GBindings {
         }
 
         connections.map(signal: Button.onClick) { $0(); return true }
+    }
+}
+
+
+class GridRenderNode: RenderNodeDefaults<GtkGrid>, RenderNode, GBindings {
+    var children: [RenderNode] = []
+
+    required init(ctx: BuildContext) {
+        let gwidget = UnsafeMutablePointer(gtk_grid_new()!)
+        super.init(withWidget: gwidget)
+    }
+
+    func calculateOrigin(item: Grid.Item, previousOrigin: Grid.Location,
+                         previousSize: Grid.Size, defaultPosition: Grid.Position) ->
+            Grid.Location {
+        guard let origin = item.origin else {
+            var position = item.position
+            if case Grid.Position.unspecified = position {
+                position = defaultPosition
+            }
+
+            switch position {
+            case .unspecified:
+                preconditionFailure("\(item) cannot have defaultPosition: " +
+                                    ".unspecified and parent have position: " +
+                                    ".unspecified.")
+            case .above:
+                return previousOrigin.with { (x: $0.x, y: $0.y - previousSize.y) }
+            case .below:
+                return previousOrigin.with { (x: $0.x, y: $0.y + previousSize.y) }
+            case .left:
+                return previousOrigin.with { (x: $0.x - previousSize.x, y: $0.y) }
+            case .right:
+                return previousOrigin.with { (x: $0.x + previousSize.x, y: $0.y) }
+            }
+        }
+
+        switch origin.how {
+        case .absolute:
+            return origin
+        case .relative:
+            return origin.with(how: Grid.Location.How.absolute) {
+                (x: $0.x + previousOrigin.x, y: $0.y + previousOrigin.y)
+            }
+        }
+    }
+
+    func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
+            RenderApplicationResult {
+        guard let grid = widget as? Grid else {
+            return RenderApplicationResult.newNode(node:
+                widget.buildRenderNode(ctx: ctx))
+        }
+
+        switch grid.homogenous {
+        case .all:
+            gtk_grid_set_row_homogeneous(gwidgetCast, 1)
+            gtk_grid_set_column_homogeneous(gwidgetCast, 1)
+        case .row:
+            gtk_grid_set_row_homogeneous(gwidgetCast, 1)
+            gtk_grid_set_column_homogeneous(gwidgetCast, 0)
+        case .column:
+            gtk_grid_set_row_homogeneous(gwidgetCast, 0)
+            gtk_grid_set_column_homogeneous(gwidgetCast, 1)
+        case .none:
+            gtk_grid_set_row_homogeneous(gwidgetCast, 0)
+            gtk_grid_set_column_homogeneous(gwidgetCast, 0)
+        }
+
+        var previousOrigin = Grid.Location(Grid.Location.How.absolute, x: 0, y: 0)
+        var previousSize = Grid.Size(x: 0, y: 0)
+
+        for (i, item) in grid.items.enumerated() {
+            let origin = calculateOrigin(item: item, previousOrigin: previousOrigin,
+                                         previousSize: previousSize,
+                                         defaultPosition: grid.defaultPosition)
+
+            let childWidget = item.child
+            let childNode = i < children.count ? children[i] : nil
+            ctx.updateNodeIfNecessary(node: childNode, widget: childWidget.widget,
+                onChange: {n in
+                    if i < children.count {
+                        children[i] = n
+                    } else {
+                        assert(i == children.count)
+                        children.append(n)
+                    }
+                }
+            )
+
+            if childNode == nil || childNode!.gwidget != children[i].gwidget {
+                if let childNode = childNode {
+                    gtk_widget_destroy(childNode.gwidget)
+                }
+
+                print("\(origin.x) \(origin.y)")
+                gtk_grid_attach(gwidgetCast, children[i].gwidget, gint(origin.x),
+                                gint(origin.y), gint(item.size.x), gint(item.size.y))
+            }
+
+            previousOrigin = origin
+            previousSize = item.size
+        }
+
+        return RenderApplicationResult.keepSelf
     }
 }
 
