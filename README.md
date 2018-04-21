@@ -1,7 +1,5 @@
 # Amai
 
-Amai is a *reactive desktop widget framework* written in Swift and built on top of libui.
+Amai is a *reactive desktop widget framework* written in Swift and built on top of GTK+.
 
-## How it works
-
-
+[See the docs to learn more.](https://refi64.com/amai)

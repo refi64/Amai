@@ -353,6 +353,7 @@ public struct SignalConnectionGroup: Hashable {
 }
 
 
+// A base widget.
 public protocol Widget {
     var key: Key { get }
 }
@@ -855,10 +856,18 @@ class GridRenderNode: RenderNodeDefaults<GtkGrid>, RenderNode, GBindings {
 }
 
 
+/// An application that can be run.
 public struct Application {
     public var id: String
     public var root: Widget
 
+    /// Creates a new Application instance.
+    ///
+    /// Parameters:
+    ///
+    /// - id: A unique, reverse-DNS application ID.
+    /// - root: The root widget to render. This must end up building into a Window
+    /// widget.
     public init(id: String, root: Widget) {
         self.id = id
         self.root = root
@@ -866,6 +875,7 @@ public struct Application {
 }
 
 
+/// Runs the given application.
 public func run(app: Application) {
     let ctx = BuildContext(app: app)
     ctx.runApp()
