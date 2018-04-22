@@ -1,11 +1,10 @@
 #!/bin/bash
 
 set -ex
-# rm -rf docs
-# git clone -b gh-pages https://github.com/kirbyfan64/amai docs
+rm -rf docs
+git clone -b gh-pages https://github.com/kirbyfan64/amai docs
 sourcekitten doc --spm-module Amai > amai-docs.json
 jazzy \
-  --clean \
   --module Amai \
   --sourcekitten-sourcefile amai-docs.json \
   --hide-documentation-coverage \
