@@ -20,6 +20,13 @@ extension Array: Hashable where Element: Hashable {
 }
 
 
+/// A key is an object that is used to compare widgets for equality. Differences will
+/// cause the widget to be rebuilt.
+///
+/// You can create your own keys by subclassing it and implementing `Key.equals` and
+/// `Key.hashValue`. This default implementation compares keys via object identity.
+///
+/// **Note that, in 99% of cases, you'll want to use `AutoKey` instead.**
 public class Key: Hashable {
     public init() {}
 
@@ -37,6 +44,8 @@ public class Key: Hashable {
 }
 
 
+/// A `Key` that's always equal to any other `NullKey`. This is primarily a stub used for
+/// default initialization so that you can later use an `AutoKey` instead.
 public class NullKey: Key {
     public override func equals(_ rhs: Key) -> Bool {
         return true
@@ -48,6 +57,19 @@ public class NullKey: Key {
 }
 
 
+/// A `Key` that takes a hashable object and wraps it, forwarding equality and hashValue
+/// tests to the underlying object. A common pattern you'll see in Amai code is:
+///
+/// ```swift
+/// struct MyWidget: StatelessWidget, HashableWidget {
+///     var key: Key = NullKey()
+///     init() {
+///         self.key = AutoKey(self)
+///     }
+/// }
+/// ```
+///
+/// Here, the widget's `AutoKey` wraps itself.
 public class AutoKey<Wrapped: Hashable>: Key {
     var wrapped: Wrapped
 
@@ -113,6 +135,7 @@ extension GBindings where Self: AnyObject {
 }
 
 
+/// The core build context, passed around between widgets for building.
 public class BuildContext: GBindings {
     var activeStates: [Key: State] = [:]
     var reActiveStates: [Key: State] = [:]
@@ -255,15 +278,33 @@ struct TypeErasedHashableWrapper: Hashable {
 }
 
 
+/// A signal handler that can be attached to widget signals. These should be created
+/// once per widget in order to avoid needless widget rebuilds.
 public class Handler<Func>: TypeErasedHashable {
     var function: Func
 
+    /// Create a signal handler that calls the given function.
     public init(_ function: Func) {
         self.function = function
     }
 }
 
 
+/// Like a `Handler`, except it calls an unbound method that must be later bound.
+/// Example:
+///
+/// ```swift
+/// class MyWidget: StatelessWidget, HashableWidget {
+///     func onClick() {}
+///     static let onClickHandler = MethodHandler(onClick)
+///     ...
+///     func build(ctx: BuildContext) -> Widget {
+///         return Button(
+///             Button.onClick => MyWidget.onClickHandler.bind(to: self)
+///         )
+/// }
+/// }
+/// ```
 public class MethodHandler<Parent, Func>: TypeErasedHashable {
     var method: (Parent) -> Func
 
@@ -353,15 +394,17 @@ public struct SignalConnectionGroup: Hashable {
 }
 
 
-// A base widget.
+/// The base widget protocol, to be implemented by custom widgets.
 public protocol Widget {
     var key: Key { get }
 }
 
 
+/// A nicer way to say your `Widget` should be hashable.
 public protocol HashableWidget: Widget, Hashable {}
 
 
+/// A wrapper over a `Widget` that allows you to store them in a `Hashable` type.
 public class Keyed<WidgetType>: Equatable, Hashable {
     public private(set) var widget: WidgetType
 
@@ -430,6 +473,7 @@ public enum Justify: Hashable {
 }
 
 
+/// A window widget. This widget should be the "root" widget of all your Amai projects.
 public struct Window: RenderWidget, HashableWidget {
     public var key: Key = NullKey()
     public var title: String
@@ -456,6 +500,7 @@ public struct Window: RenderWidget, HashableWidget {
 }
 
 
+/// A simple text label. Shows the given text with the given justification.
 public struct Label: RenderWidget, HashableWidget {
     public var key: Key = NullKey()
     public var text: String
@@ -475,6 +520,7 @@ public struct Label: RenderWidget, HashableWidget {
 }
 
 
+/// A button.
 public struct Button: RenderWidget, HashableWidget {
     public var key: Key = NullKey()
     public var text: String
@@ -492,15 +538,22 @@ public struct Button: RenderWidget, HashableWidget {
         return node.applyChangesReceivingNode(ctx: ctx, from: self)
     }
 
+    /// Emitted when a button is clicked.
     public static let onClick: SignalId<() -> Void> = SignalId()
 }
 
 
+/// A grid. This is the core layout component of Amai (and GTK+).
+///
+/// Grids contain a set of `Grid.Item` values, each of which is positions either
+/// absolutely or relatively on the grid.
 public struct Grid: RenderWidget, HashableWidget {
+    /// The position of an item on the grid.
     public enum Position: Hashable {
         case unspecified, above, below, left, right
     }
 
+    /// Homogenity of grid items: are they homogenous on rows, columns, both, or none?
     public enum Homogenous: Hashable {
         case all, row, column, none
     }
@@ -510,8 +563,12 @@ public struct Grid: RenderWidget, HashableWidget {
             case absolute, relative
         }
 
+        /// Determines whether this is location is relative to the previous grid item, or
+        /// is absolute.
         public var how: How
+        /// The horizontal cell the grid item is in.
         public var x: Int
+        /// The vertical cell the grid item is in.
         public var y: Int
 
         public init(_ how: How, x: Int, y: Int) {
@@ -520,10 +577,12 @@ public struct Grid: RenderWidget, HashableWidget {
             self.y = y
         }
 
+        /// A shortcut to create a new absolute location.
         public static func absolute(x: Int, y: Int) -> Location {
             return Location(.absolute, x: x, y: y)
         }
 
+        /// A shortcut to create a new relative location.
         public static func relative(x: Int, y: Int) -> Location {
             return Location(.relative, x: x, y: y)
         }
@@ -536,6 +595,7 @@ public struct Grid: RenderWidget, HashableWidget {
         }
     }
 
+    /// Determines the width and height of a grid item.
     public struct Size: Hashable {
         public var x: Int
         public var y: Int
@@ -546,6 +606,7 @@ public struct Grid: RenderWidget, HashableWidget {
         }
     }
 
+    /// A grid item. Holds a child widget, origin location, size, and position.
     public struct Item: Hashable {
         var origin: Location?
         var size: Size
@@ -863,10 +924,8 @@ public struct Application {
 
     /// Creates a new Application instance.
     ///
-    /// Parameters:
-    ///
-    /// - id: A unique, reverse-DNS application ID.
-    /// - root: The root widget to render. This must end up building into a Window
+    /// - parameter id: A unique, reverse-DNS application ID.
+    /// - parameter root: The root widget to render. This must end up building into a Window
     /// widget.
     public init(id: String, root: Widget) {
         self.id = id

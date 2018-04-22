@@ -14,7 +14,36 @@ class IncButtonState: State {
             count += 1
         }
     }
-    let onClickHandler = MethodHandler(IncButtonState.onClick)
+    static let onClickHandler = MethodHandler(onClick)
+
+    func build(ctx: BuildContext) -> Widget {
+        return Button(
+            text: "You have pressed this \(count) times.",
+            Button.onClick => IncButtonState.onClickHandler.bind(to: self)
+        )
+    }
+}
+
+
+struct IncButton: StatefulWidget, Hashable {
+    var key: Key = NullKey()
+
+    init(key: Key? = nil) {
+        self.key = key ?? AutoKey(self)
+    }
+
+    func createState(ctx: BuildContext) -> State {
+        return IncButtonState(ctx: ctx)
+    }
+}
+
+
+struct MessyGrid: StatelessWidget, HashableWidget {
+    var key: Key = NullKey()
+
+    init(key: Key? = nil) {
+        self.key = key ?? AutoKey(self)
+    }
 
     func build(ctx: BuildContext) -> Widget {
         return Grid(
@@ -26,10 +55,7 @@ class IncButtonState: State {
                 ),
                 Grid.Item(
                     position: Grid.Position.right,
-                    child: Button(
-                        text: "You have pressed this \(count) times.",
-                        Button.onClick => onClickHandler.bind(to: self)
-                    )
+                    child: IncButton()
                 ),
                 Grid.Item(
                     position: Grid.Position.below,
@@ -54,46 +80,19 @@ class IncButtonState: State {
 }
 
 
-struct IncButton: StatefulWidget, Hashable {
+struct Home: StatelessWidget, HashableWidget {
     var key: Key = NullKey()
 
     init(key: Key? = nil) {
         self.key = key ?? AutoKey(self)
     }
-
-    func createState(ctx: BuildContext) -> State {
-        return IncButtonState(ctx: ctx)
-    }
-}
-
-
-struct Home: StatelessWidget, Hashable {
-    var key: Key = NullKey()
-
-    init(key: Key? = nil) {
-        self.key = key ?? AutoKey(self)
-    }
-
-    // static let onClickStaticHandler = Handler() {
-    //     print("onClickStaticHandler")
-    // }
-
-    // func onClickMethod() {
-    //     print("onClickMethod")
-    // }
-    // static let onClickMethodHandler = MethodHandler(Home.onClickMethod)
 
     func build(ctx: BuildContext) -> Widget {
         return Window(
             title: "Amai Demo",
             width: 200,
             height: 100,
-            child: IncButton()
-            //     Button(
-            //     text: "Hello, world!",
-            //     Button.onClick => Home.onClickStaticHandler,
-            //     Button.onClick => Home.onClickMethodHandler.bind(to: self)
-            // )
+            child: MessyGrid()
         )
     }
 }
