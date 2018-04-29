@@ -410,19 +410,26 @@ public protocol HashableWidget: Widget, Hashable {}
 
 
 /// A wrapper over a `Widget` that allows you to store them in a `Hashable` type.
-public class Keyed<WidgetType>: Equatable, Hashable {
-    public private(set) var widget: WidgetType
+public class Keyed<Type>: Equatable, Hashable {
+    public private(set) var inner: Type? = nil
+    public private(set) var key: Key
 
-    public init(widget: WidgetType) {
-        self.widget = widget
+    public init(key: Key, inner: Type? = nil) {
+        self.key = key
+        self.inner = inner
     }
 
-    public static func == (lhs: Keyed<WidgetType>, rhs: Keyed<WidgetType>) -> Bool {
-        return (lhs.widget as! Widget).key == (rhs.widget as! Widget).key
+    public init(widget: Type) {
+        self.key = (widget as! Widget).key
+        self.inner = widget
+    }
+
+    public static func == (lhs: Keyed<Type>, rhs: Keyed<Type>) -> Bool {
+        return lhs.key == rhs.key
     }
 
     public var hashValue: Int {
-        return (widget as! Widget).key.hashValue
+        return key.hashValue
     }
 }
 
@@ -522,6 +529,63 @@ public struct Label: RenderWidget, HashableWidget {
         let node = LabelRenderNode(ctx: ctx)
         return node.applyChangesReceivingNode(ctx: ctx, from: self)
     }
+}
+
+
+public class InputStateManager {
+    var node: InputRenderNode?
+
+    public init() {}
+
+    public var text: String {
+        return node?.text ?? ""
+    }
+}
+
+
+/// An input box.
+public struct Input: RenderWidget, HashableWidget {
+    public enum Purpose: Hashable {
+        /// Allow anything.
+        case anything
+        case alpha
+        /// Allow only digits.
+        case digits
+        /// Allow only numbers (like digits, but includes exponents and decimals).
+        case number
+        case phone
+        case url
+        case email
+        case name
+        case password
+        case pin
+    }
+
+    public var key: Key = NullKey()
+    public var placeholder: String
+    public var purpose: Purpose
+    public var manager: Keyed<InputStateManager?>
+    var connections: SignalConnectionGroup
+
+    public init(key: Key? = nil, placeholder: String = "",
+                purpose: Purpose = Purpose.anything,
+                managedBy manager: InputStateManager? = nil,
+                _ connections: SignalConnection...) {
+        self.placeholder = placeholder
+        self.purpose = purpose
+        self.manager = Keyed<InputStateManager?>(key: Key(), inner: manager)
+        self.connections = SignalConnectionGroup(connections)
+
+        self.key = key ?? AutoKey(self)
+    }
+
+    func buildRenderNode(ctx: BuildContext) -> RenderNode {
+        let node = InputRenderNode(ctx: ctx)
+        return node.applyChangesReceivingNode(ctx: ctx, from: self)
+    }
+
+    /// Emitted when the text is changed.
+    public static let onChanged: SignalId<(String) -> Void> = SignalId()
 }
 
 
@@ -743,7 +807,7 @@ class WindowRenderNode: RenderNodeDefaults<GtkWindow>, RenderNode {
         gtk_window_set_title(gwidgetCast, window.title)
         gtk_window_set_default_size(gwidgetCast, gint(window.width), gint(window.height))
 
-        ctx.updateNodeIfNecessary(node: child, widget: window.child.widget,
+        ctx.updateNodeIfNecessary(node: child, widget: window.child.inner!,
             onChange: {n in
                 let gcontainer = gcast(gwidget, to: GtkContainer.self)
                 if (child != nil) {
@@ -776,6 +840,90 @@ class LabelRenderNode: RenderNodeDefaults<GtkLabel>, RenderNode, GBindings {
         gtk_label_set_justify(gwidgetCast, label.justify.toGtk())
 
         return RenderApplicationResult.keepSelf
+    }
+}
+
+
+class InputRenderNode: RenderNodeDefaults<GtkEntry>, RenderNode, GBindings {
+    var connections: SignalConnectionGroup? = nil
+
+    required init(ctx: BuildContext) {
+        let gwidget = UnsafeMutablePointer(gtk_entry_new()!)
+        super.init(withWidget: gwidget)
+
+        let closure: @convention(c)
+            (UnsafeMutablePointer<GtkEditable>,
+             UnsafeMutableRawPointer) -> Void = {(_, cself) in
+                InputRenderNode.from(cself).changed()
+            }
+        connect(toObject: gwidget, signal: "changed", closure: closure)
+    }
+
+    func convertPurpose(_ purpose: Input.Purpose) ->
+            (purpose: GtkInputPurpose, hidden: Bool) {
+        switch purpose {
+        case Input.Purpose.anything:
+            return (purpose: GTK_INPUT_PURPOSE_FREE_FORM, hidden: false)
+        case Input.Purpose.alpha:
+            return (purpose: GTK_INPUT_PURPOSE_ALPHA, hidden: false)
+        case Input.Purpose.digits:
+            return (purpose: GTK_INPUT_PURPOSE_DIGITS, hidden: false)
+        case Input.Purpose.number:
+            return (purpose: GTK_INPUT_PURPOSE_NUMBER, hidden: false)
+        case Input.Purpose.phone:
+            return (purpose: GTK_INPUT_PURPOSE_PHONE, hidden: false)
+        case Input.Purpose.url:
+            return (purpose: GTK_INPUT_PURPOSE_URL, hidden: false)
+        case Input.Purpose.email:
+            return (purpose: GTK_INPUT_PURPOSE_EMAIL, hidden: false)
+        case Input.Purpose.name:
+            return (purpose: GTK_INPUT_PURPOSE_NAME, hidden: false)
+        case Input.Purpose.password:
+            return (purpose: GTK_INPUT_PURPOSE_PASSWORD, hidden: true)
+        case Input.Purpose.pin:
+            return (purpose: GTK_INPUT_PURPOSE_PIN, hidden: true)
+        }
+    }
+
+    func applyChanges(ctx: BuildContext, from widget: RenderWidget) ->
+            RenderApplicationResult {
+        guard let input = widget as? Input else {
+            return RenderApplicationResult.newNode(node:
+                widget.buildRenderNode(ctx: ctx))
+        }
+
+        if let manager = input.manager.inner {
+            manager!.node = self
+        }
+
+        gtk_entry_set_placeholder_text(gwidgetCast, input.placeholder)
+        let (purpose: purpose, hidden: hidden) = convertPurpose(input.purpose)
+        gtk_entry_set_visibility(gwidgetCast, hidden ? 0 : 1)
+
+        var purposeValue = GValue()
+        // G_TYPE_INT == 6 << 2
+        g_value_init(&purposeValue, 6 << 2)
+        g_value_set_int(&purposeValue, gint(purpose.rawValue))
+        g_object_set_property(gcast(gwidget, to: GObject.self), "input-purpose",
+                              &purposeValue)
+        g_value_unset(&purposeValue)
+
+        connections = input.connections
+
+        return RenderApplicationResult.keepSelf
+    }
+
+    var text: String {
+        return String(cString: gtk_entry_get_text(gwidgetCast))
+    }
+
+    func changed() {
+        guard let connections = self.connections else {
+            return
+        }
+
+        let text = self.text
+        connections.map(signal: Input.onChanged) { $0(text); return true }
     }
 }
 
@@ -893,7 +1041,7 @@ class GridRenderNode: RenderNodeDefaults<GtkGrid>, RenderNode, GBindings {
 
             let childWidget = item.child
             let childNode = i < children.count ? children[i] : nil
-            ctx.updateNodeIfNecessary(node: childNode, widget: childWidget.widget,
+            ctx.updateNodeIfNecessary(node: childNode, widget: childWidget.inner!,
                 onChange: {n in
                     if i < children.count {
                         children[i] = n

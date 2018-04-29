@@ -43,6 +43,53 @@ struct IncButton: StatefulWidget, Hashable {
 }
 
 
+class NameBoxState: State {
+    var ctx: BuildContext
+    var nameManager = InputStateManager()
+    var passManager = InputStateManager()
+
+    init(ctx: BuildContext) {
+        self.ctx = ctx
+    }
+
+    func onChanged(_ text: String) {
+        print("\(text) (name: \(nameManager.text), pass: \(passManager.text))")
+    }
+    static let onChangedHandler = MethodHandler(onChanged)
+
+    func build(ctx: BuildContext) -> Widget {
+        return Grid(
+            column: [
+                Input(
+                    placeholder: "Enter your name here",
+                    managedBy: nameManager,
+                    Input.onChanged => NameBoxState.onChangedHandler.bind(to: self)
+                ),
+                Input(
+                    placeholder: "Enter your password here",
+                    purpose: .password,
+                    managedBy: passManager,
+                    Input.onChanged => NameBoxState.onChangedHandler.bind(to: self)
+                )
+            ]
+        )
+    }
+}
+
+
+struct NameBox: StatefulWidget, Hashable {
+    var key: Key = NullKey()
+
+    init(key: Key? = nil) {
+        self.key = key ?? AutoKey(self)
+    }
+
+    func createState(ctx: BuildContext) -> State {
+        return NameBoxState(ctx: ctx)
+    }
+}
+
+
 struct MessyGrid: StatelessWidget, HashableWidget {
     var key: Key = NullKey()
 
@@ -78,6 +125,10 @@ struct MessyGrid: StatelessWidget, HashableWidget {
                 Grid.Item(
                     from: Grid.Location.relative(x: -1, y: 0),
                     child: Button(text: "...and to the left!")
+                ),
+                Grid.Item(
+                    from: Grid.Location.relative(x: 0, y: 1),
+                    child: NameBox()
                 )
             ]
         )
